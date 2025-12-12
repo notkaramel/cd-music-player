@@ -5,6 +5,15 @@
 - Has a web client to control playback on localhost
 - Perfect for home server/self-hosted music player
 
+## Working with .proto files
+```sh
+git submodule add -b protofiles git@github.com:notkaramel/cd-music-player player/protofiles
+git submodule add -b protofiles git@github.com:notkaramel/cd-music-player client/protofiles
+
+# Sync
+git submodule foreach git pull origin protofiles
+```
+
 ## Client
 - Simple webapp. Connects to the player via gRPC-web
 - Docs:
