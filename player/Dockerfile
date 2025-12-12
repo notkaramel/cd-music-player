@@ -1,19 +1,8 @@
-FROM ubuntu:25.04
+FROM golang:1.24 as builder
 
-WORKDIR /player
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+RUN go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    git \
-    wget \
-    unzip \
-    pkg-config \
-    libssl-dev \
-    autoconf \
-    libtool \
-    sudo
+ENV PATH="$PATH:$(go env GOPATH)/bin"
 
-ADD install_gRPC.sh /player/install_gRPC.sh
-RUN chmod +x /player/install_gRPC.sh
-RUN ./install_gRPC.sh 
+RUN protoc --proto_path=./protos --go_out=./player/protos/ --grpc_out=./player/protos/ protos/player.proto                                1 ↵ ✖ ✹ ✭
