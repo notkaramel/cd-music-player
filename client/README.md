@@ -1,22 +1,24 @@
-# Thanks for checking out Marko
+```sh
+bun create vite@latest client --template vanilla-ts
+# I enabled Rolldown-Vite for this project
 
-# Installation
+# Install marko and TailwindCSS using vite
+bun install -D @marko/vite @marko/type-check 
+bun install marko@next tailwindcss @tailwindcss/vite @marko/run
 
 ```
-npm init marko -- --template basic
-cd marko-app
-npm install
-npm run dev
+
+Create a `vite.config.ts` file with the following content:
+
+```ts
+import { defineConfig } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
+import marko from "@marko/vite";
+
+export default defineConfig({
+  plugins: [
+    tailwindcss(),
+    marko(),
+  ],
+})
 ```
-
-## Overview
-
-This project is powered by [@marko/run](https://github.com/marko-js/run).
-
-- Run `npm run dev` to start the development server
-- Run `npm run build` to build a production-ready node.js server
-- Run `npm run preview` to run the production server
-
-## Adding Pages
-
-Pages map to the directory structure. You can add additional pages by creating files/directories under `src/routes` with `+page.marko` files. Learn more in the [`@marko/run` docs](https://github.com/marko-js/run/#file-based-routing).

@@ -1,31 +1,28 @@
-<!doctype html>
+/* +layout.marko */
+export interface Input {
+  content: Marko.Body;
+}
+
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <link rel="icon" type="image/png" sizes="32x32" href="./favicon.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="A basic Marko app.">
-    <title>${$global.meta.pageTitle || "Marko"}</title>
+    <title>CD Music Player</title>
+    <link rel="stylesheet" href="/src/style.css">
   </head>
   <body>
-    <${input.content}/>
+    <header>
+      <title>CD Music Player</title>
+    </header>
+
+    <main class="flex flex-col items-center min-h-screen min-w-[320px] m-0">
+      <${input.content}/>
+      // render the page or layout here
+    </main>
+
+    <footer>
+      <p>&copy; 2024 CD Music Player. All rights reserved.</p>
+    </footer>
   </body>
 </html>
-
-<style>
-  html,
-  body {
-    font-family: system-ui;
-    padding: 0;
-    margin: 0;
-    height: 100%;
-    color: #fff;
-    background: #15151e;
-  }
-  code {
-    color: #fc0;
-  }
-  a {
-    color: #09c;
-  }
-</style>
