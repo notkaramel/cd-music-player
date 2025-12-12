@@ -1,22 +1,19 @@
 {
-  "name": "cd-player-client",
-  "private": true,
-  "version": "0.0.0",
+  "name": "client",
+  "description": "The default Marko starter app with TypeScript",
+  "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+  "dependencies": {
+    "marko": "^6.0.0"
   },
   "devDependencies": {
-    "vite": "npm:rolldown-vite@7.1.14"
+    "@marko/run": "^0.9.3"
   },
-  "overrides": {
-    "vite": "npm:rolldown-vite@7.1.14"
-  },
-  "dependencies": {
-    "@tailwindcss/vite": "^4.1.16",
-    "alpinejs": "^3.15.0",
-    "tailwindcss": "^4.1.16"
+  "private": true,
+  "scripts": {
+    "dev": "marko-run",
+    "build": "marko-run build",
+    "preview": "marko-run preview",
+    "start": "node --enable-source-maps ./dist/index.mjs"
   }
 }
