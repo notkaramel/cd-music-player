@@ -1,0 +1,8 @@
+[submodule "player/protofiles"]
+	path = player/protofiles
+	url = git@github.com:notkaramel/cd-music-player
+	branch = protofiles
+[submodule "client/protofiles"]
+	path = client/protofiles
+	url = git@github.com:notkaramel/cd-music-player
+	branch = protofiles
