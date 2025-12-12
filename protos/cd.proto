@@ -1,0 +1,37 @@
+// Service to get CD information
+syntax = "proto3";
+
+package music.player;
+
+service CD {
+    rpc GetAllSongs(CDRequest) returns (CDResponse);
+    rpc GetCDInfo(CDRequest) returns (CDResponse);
+}
+
+message CDRequest {
+    optional string cd_id = 1;
+}
+
+message CDResponse {
+    repeated SongResponse songs = 1;
+    optional string cd_title = 2;
+    optional string artist = 3;
+    optional int32 total_songs = 4;
+}
+
+// Service to get song information
+service Song {
+    rpc GetSongInfo(SongRequest) returns (SongResponse);
+}
+
+message SongRequest {
+    optional int32 song_id = 1;
+}
+
+message SongResponse {
+    optional int32 song_id = 1;
+    optional string title = 2;
+    optional string artist = 3;
+    optional string album = 4;
+    optional int32 duration = 5; // duration in seconds
+}

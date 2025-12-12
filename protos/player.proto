@@ -1,0 +1,26 @@
+// This file declares the gRPC service and messages
+// for controlling the music player.
+
+syntax = "proto3";
+
+option go_package = "google.golang.org/grpc/music/player;player";
+
+package music.player;
+
+service Player {
+    rpc GetStatus(PlayerRequest) returns (PlayerResponse);
+
+    rpc Play(PlayerRequest) returns (PlayerResponse);
+    rpc Pause(PlayerRequest) returns (PlayerResponse);
+    rpc Stop(PlayerRequest) returns (PlayerResponse);
+    rpc Next(PlayerRequest) returns (PlayerResponse);
+    rpc Previous(PlayerRequest) returns (PlayerResponse);
+}
+
+message PlayerRequest {
+    optional string command = 1;
+}
+
+message PlayerResponse {
+    optional string message = 1;
+}
