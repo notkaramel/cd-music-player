@@ -1,4 +1,4 @@
-module cd-player
+module mpv-go-tui
 
 go 1.25.7
 

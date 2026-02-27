@@ -137,38 +137,43 @@ func startCDWatcher() {
 	for {
 		present := cdPresent(context.Background(), device)
 		mpvProcMu.Lock()
-		if present && !lastPresent {
-			// CD inserted: start mpv if not already running (TUI attaches to this instance via same socket)
+		if present {
 			if mpvProc == nil {
-				mpvProc = exec.Command("mpv", "cdda://",
-					"--cdda-device="+device,
-					"--input-ipc-server="+socket,
-					"--no-terminal")
-				mpvProc.Stdout = nil
-				mpvProc.Stderr = nil
-				if err := mpvProc.Start(); err != nil {
-					mpvProc = nil
+				// Check if another process already has mpv on the socket (e.g. another TUI instance)
+				if conn, err := net.DialTimeout("unix", socket, 500*time.Millisecond); err == nil {
+					conn.Close()
+					// Socket in use: attach to existing mpv, don't start ours
 				} else {
-					cmd := mpvProc
-					go func() {
-						cmd.Wait()
-						mpvProcMu.Lock()
-						if mpvProc == cmd {
-							mpvProc = nil
-						}
-						mpvProcMu.Unlock()
-					}()
+					// No mpv on socket: start our own (TUI will attach via same socket)
+					mpvProc = exec.Command("mpv", "cdda://",
+						"--cdda-device="+device,
+						"--input-ipc-server="+socket,
+						"--no-terminal")
+					mpvProc.Stdout = nil
+					mpvProc.Stderr = nil
+					if err := mpvProc.Start(); err != nil {
+						mpvProc = nil
+					} else {
+						cmd := mpvProc
+						go func() {
+							cmd.Wait()
+							mpvProcMu.Lock()
+							if mpvProc == cmd {
+								mpvProc = nil
+							}
+							mpvProcMu.Unlock()
+						}()
+					}
 				}
 			}
-		}
-		if !present && lastPresent {
-			// CD removed: kill mpv
-			if mpvProc != nil && mpvProc.Process != nil {
+			lastPresent = true
+		} else {
+			if lastPresent && mpvProc != nil && mpvProc.Process != nil {
 				_ = mpvProc.Process.Kill()
 				mpvProc = nil
 			}
+			lastPresent = false
 		}
-		lastPresent = present
 		mpvProcMu.Unlock()
 		time.Sleep(tick)
 	}
@@ -263,7 +268,6 @@ type model struct {
 	chapters        int
 	positionSeconds float64
 	durationSeconds float64
-	trackTitle      string
 	width           int
 	height          int
 	repeat          bool
@@ -271,6 +275,7 @@ type model struct {
 	cavaBars        []int // from cava file if present
 	tickCount       int   // for placeholder visualizer animation
 	paletteIndex    int   // 0-3, cycle with [c]
+	quitFirstKey    string // "q" when first q pressed, for qq/qw sequence; cleared on other key
 }
 
 type statusMsg struct {
@@ -279,13 +284,13 @@ type statusMsg struct {
 	chapters        int
 	positionSeconds float64
 	durationSeconds float64
-	trackTitle      string
 	speed           float64
 	err             error
 }
 
 type tickMsg struct{}
 type cavaMsg []int
+type quitNowMsg struct{} // sent after stop mpv or pause client; handler returns tea.Quit
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
@@ -342,6 +347,25 @@ func sendCommandCmd(cmd []interface{}) tea.Cmd {
 func queryStatusCmd() tea.Cmd {
 	return func() tea.Msg {
 		return queryStatus()
+	}
+}
+
+// stopMpvAndQuitCmd tells mpv to quit (via IPC) and also kills any mpv instance we spawned, then returns quitNowMsg so the program quits.
+func stopMpvAndQuitCmd() tea.Cmd {
+	return func() tea.Msg {
+		// First ask mpv (whoever owns the socket) to quit.
+		_ = sendMPVCommand([]interface{}{"quit"})
+		// Then, as a fallback, kill a locally spawned mpv process if we have one.
+		killMpvIfSpawned()
+		return quitNowMsg{}
+	}
+}
+
+// pauseAndQuitCmd pauses mpv (so a new TUI can attach later) and returns quitNowMsg so the program quits without killing mpv.
+func pauseAndQuitCmd() tea.Cmd {
+	return func() tea.Msg {
+		_ = sendMPVCommand([]interface{}{"set_property", "pause", true})
+		return quitNowMsg{}
 	}
 }
 
@@ -514,7 +538,7 @@ func queryStatus() statusMsg {
 		}
 	}
 
-	// Derive per-chapter timing from chapter metadata so each track has its own duration.
+	// Derive per-chapter timing from chapter-list so each track has its own duration.
 	if v, err := get("chapter-list"); err == nil {
 		if list, ok := v.([]interface{}); ok && s.chapters > 0 && s.chapter >= 0 && s.chapter < len(list) && haveTimePos {
 			startTimes := make([]float64, len(list))
@@ -522,14 +546,6 @@ func queryStatus() statusMsg {
 				if m, ok := item.(map[string]interface{}); ok {
 					if t, ok := m["time"].(float64); ok {
 						startTimes[i] = t
-					}
-					// Pick up a title for the current chapter if present in CD metadata.
-					if i == s.chapter {
-						if title, ok := m["title"].(string); ok && title != "" {
-							s.trackTitle = title
-						} else if name, ok := m["name"].(string); ok && name != "" {
-							s.trackTitle = name
-						}
 					}
 				}
 			}
@@ -587,6 +603,9 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case quitNowMsg:
+		return m, tea.Quit
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -594,9 +613,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
+		case "q":
+			if m.quitFirstKey == "q" {
+				m.quitFirstKey = ""
+				return m, pauseAndQuitCmd()
+			}
+			m.quitFirstKey = "q"
+			return m, nil
+		case "w":
+			if m.quitFirstKey == "q" {
+				m.quitFirstKey = ""
+				return m, stopMpvAndQuitCmd()
+			}
+			m.quitFirstKey = ""
+		case "s":
+			if m.quitFirstKey == "s" {
+				m.quitFirstKey = ""
+				return m, sendCommandCmd([]interface{}{"set_property", "speed", 1.0})
+			}
+			m.quitFirstKey = "s"
+			return m, nil
+		case "ctrl+c":
+			return m, stopMpvAndQuitCmd()
+		default:
+			m.quitFirstKey = ""
+		}
 
+		switch msg.String() {
 		case " ":
 			return m, sendCommandCmd([]interface{}{"cycle", "pause"})
 
@@ -610,7 +653,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, sendCommandCmd([]interface{}{"multiply", "speed", 1.1})
 
 		case "down":
-			return m, sendCommandCmd([]interface{}{"multiply", "speed", 0.86})
+			return m, sendCommandCmd([]interface{}{"multiply", "speed", 0.9091})
 
 		case "r":
 			m.repeat = !m.repeat
@@ -667,7 +710,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chapters = msg.chapters
 		m.positionSeconds = msg.positionSeconds
 		m.durationSeconds = msg.durationSeconds
-		m.trackTitle = msg.trackTitle
 		m.speed = msg.speed
 		return m, nil
 	}
@@ -725,15 +767,8 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Line 1: [q] Quit right-aligned so it doesn't interfere with title
-	quitLabel := " [q] Quit "
-	quitPad := innerWidth - runeLen(quitLabel)
-	if quitPad < 0 {
-		quitPad = 0
-	}
-	b.WriteString(strings.Repeat(" ", quitPad) + quitLabel + "\n")
-
-	// Line 2: CD Player centered (with flares)
+	// Line 1: CD Player centered (with flares and top padding)
+	b.WriteString(strings.Repeat(" ", innerWidth) + "\n")
 	leftFlare := "  ✦ ✦  "
 	centerTitle := " CD PLAYER "
 	rightFlare := "  ✦ ✦  "
@@ -769,31 +804,18 @@ func (m model) View() string {
 	}
 	line(trackInfo)
 
-	// Title / track name (centered)
-	if m.trackTitle != "" {
-		maxTitleRunes := innerWidth
-		if runeLen(m.trackTitle) > maxTitleRunes {
-			if maxTitleRunes >= 3 {
-				trackTitle := truncRunes(m.trackTitle, maxTitleRunes-3) + "..."
-				line(trackTitle)
-			} else {
-				line(truncRunes(m.trackTitle, maxTitleRunes))
-			}
-		} else {
-			line(m.trackTitle)
-		}
-	} else {
-		line("")
-	}
-
-	// Time and speed (centered, one line)
+	// Time, speed, and repeat state (centered, one line)
 	if m.durationSeconds > 0 {
 		timeStr := fmt.Sprintf("TIME: %s / %s", formatTime(m.positionSeconds), formatTime(m.durationSeconds))
 		speedStr := fmt.Sprintf("Speed: %.2fx", m.speed)
 		if m.speed <= 0 {
 			speedStr = "Speed: 1.00x"
 		}
-		line(timeStr + "    " + speedStr)
+		repeatStr := "Repeat: Off"
+		if m.repeat {
+			repeatStr = "Repeat: On"
+		}
+		line(timeStr + "    " + speedStr + "    " + repeatStr)
 
 		barWidth := int(float64(innerWidth) * 0.8)
 		if barWidth < 10 {
@@ -806,7 +828,11 @@ func (m model) View() string {
 		if m.speed <= 0 {
 			speedStr = "Speed: 1.00x"
 		}
-		line(speedStr)
+		repeatStr := "Repeat: Off"
+		if m.repeat {
+			repeatStr = "Repeat: On"
+		}
+		line(speedStr + "    " + repeatStr)
 		line("")
 	}
 
@@ -820,9 +846,24 @@ func (m model) View() string {
 	// Controls line 1: Prev, Play, Next (with letter keys)
 	controls1 := "← [p] Prev    [SPACE] Play    → [n] Next"
 	line(controls1)
-	// Controls line 2: Speed+, Speed-, Repeat
-	controls2 := "↑ Speed+    ↓ Speed-    [r] Repeat    [c] Palette"
+	// Controls line 2: Speed+, Speed-, Reset speed, Repeat
+	controls2 := "↑ Speed+    ↓ Speed-    [ss] Speed=1    [r] Repeat    [c] Palette"
 	line(controls2)
+
+	b.WriteString("\n")
+	// Quit hints: 2 lines, centered; first "q" bold+highlight when waiting for second key (qq/qw)
+	quitStyle := lipgloss.NewStyle().Foreground(p.TextPrimary)
+	quitHighlightStyle := lipgloss.NewStyle().Bold(true).Foreground(p.TitleAccent)
+	var quitLine1, quitLine2 string
+	if m.quitFirstKey == "q" {
+		quitLine1 = quitStyle.Render("[") + quitHighlightStyle.Render("q") + quitStyle.Render("q] Pause & quit")
+		quitLine2 = quitStyle.Render("[Ctrl+C] [") + quitHighlightStyle.Render("q") + quitStyle.Render("w] Stop & quit")
+	} else {
+		quitLine1 = quitStyle.Render("[qq] Pause & quit")
+		quitLine2 = quitStyle.Render("[Ctrl+C] [qw] Stop & quit")
+	}
+	b.WriteString(centerIn(quitLine1, innerWidth) + "\n")
+	b.WriteString(centerIn(quitLine2, innerWidth) + "\n")
 
 	if m.err != "" {
 		line("ERROR: " + m.err)
@@ -953,6 +994,6 @@ func main() {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
 	}
-	killMpvIfSpawned()
+	// mpv is only killed when user chose "Stop mpv" at quit prompt; "Pause client" leaves it running
 }
 
