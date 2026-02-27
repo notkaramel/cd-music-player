@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -85,6 +87,101 @@ func getMpvSocketPath() string {
 		return p
 	}
 	return defaultMpvSocket
+}
+
+func getCDDevice() string {
+	if p := os.Getenv("CD_DEVICE"); p != "" {
+		return p
+	}
+	return "/dev/sr0"
+}
+
+// cdPresent returns true if a disc is present in the CD device.
+// Uses sysfs size first (reliable when CD is already inserted), then blockdev. Does not use dd.
+func cdPresent(ctx context.Context, device string) bool {
+	// 1. Linux sysfs: /sys/block/<name>/size is non-zero when a disc is present; no exec, works when already inserted.
+	base := filepath.Base(device)
+	sizePath := filepath.Join("/sys/block", base, "size")
+	if b, err := os.ReadFile(sizePath); err == nil {
+		var size int64
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &size); err == nil {
+			return size > 0
+		}
+	}
+
+	// 2. blockdev --getsize64: reports "No medium found" when empty; works when disc is already in.
+	ctx2, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx2, "blockdev", "--getsize64", device)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var size int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &size); err != nil {
+		return false
+	}
+	return size > 0
+}
+
+var (
+	mpvProc   *exec.Cmd
+	mpvProcMu sync.Mutex
+)
+
+func startCDWatcher() {
+	device := getCDDevice()
+	socket := getMpvSocketPath()
+	tick := 3 * time.Second
+	var lastPresent bool
+	for {
+		present := cdPresent(context.Background(), device)
+		mpvProcMu.Lock()
+		if present && !lastPresent {
+			// CD inserted: start mpv if not already running (TUI attaches to this instance via same socket)
+			if mpvProc == nil {
+				mpvProc = exec.Command("mpv", "cdda://",
+					"--cdda-device="+device,
+					"--input-ipc-server="+socket,
+					"--no-terminal")
+				mpvProc.Stdout = nil
+				mpvProc.Stderr = nil
+				if err := mpvProc.Start(); err != nil {
+					mpvProc = nil
+				} else {
+					cmd := mpvProc
+					go func() {
+						cmd.Wait()
+						mpvProcMu.Lock()
+						if mpvProc == cmd {
+							mpvProc = nil
+						}
+						mpvProcMu.Unlock()
+					}()
+				}
+			}
+		}
+		if !present && lastPresent {
+			// CD removed: kill mpv
+			if mpvProc != nil && mpvProc.Process != nil {
+				_ = mpvProc.Process.Kill()
+				mpvProc = nil
+			}
+		}
+		lastPresent = present
+		mpvProcMu.Unlock()
+		time.Sleep(tick)
+	}
+}
+
+// killMpvIfSpawned kills the mpv process started by the program, if any. Call on TUI exit.
+func killMpvIfSpawned() {
+	mpvProcMu.Lock()
+	defer mpvProcMu.Unlock()
+	if mpvProc != nil && mpvProc.Process != nil {
+		_ = mpvProc.Process.Kill()
+		mpvProc = nil
+	}
 }
 
 // palette holds colours for one theme.
@@ -850,10 +947,12 @@ func renderVisualizer(cavaBars []int, tickCount int, width int, accent lipgloss.
 }
 
 func main() {
+	go startCDWatcher()
 	p := tea.NewProgram(initModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
 	}
+	killMpvIfSpawned()
 }
 
